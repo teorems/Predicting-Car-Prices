@@ -1,0 +1,166 @@
+---
+title: "Predicting Car Prices"
+author: "Emmanuel Messori"
+date: "01/10/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, tidy = TRUE)
+```
+
+## Objective
+
+In this project I'll work with a 1987 data set retrieved from the [UCI Machine Learning Archive](https://archive.ics.uci.edu/ml/datasets/automobile) which contains information about 205 cars. The objective is to predict the cars' price by a selected set of features.
+
+## The Data
+
+> 
+Data Set Information:
+>
+This data set consists of three types of entities: (a) the specification of an auto in terms of various characteristics, (b) its assigned insurance risk rating, (c) its normalized losses in use as compared to other cars. The second rating corresponds to the degree to which the auto is more risky than its price indicates. Cars are initially assigned a risk factor symbol associated with its price. Then, if it is more risky (or less), this symbol is adjusted by moving it up (or down) the scale. Actuarians call this process "symboling". A value of +3 indicates that the auto is risky, -3 that it is probably pretty safe.
+>
+The third factor is the relative average loss payment per insured vehicle year. This value is normalized for all autos within a particular size classification (two-door small, station wagons, sports/speciality, etc...), and represents the average loss per car per year.
+>
+Note: Several of the attributes in the database could be used as a "class" attribute.
+
+```{r}
+library(tidyverse)
+#retrieving the attribute names from `colnames.txt`
+colnames <-read.table("colnames.txt")
+#the NA values are signaled by a question mark
+cars <- read_csv("cars.data", col_names = colnames$V1, na = "?", show_col_types = FALSE)
+```
+
+```{r}
+summary(cars)
+```
+
+## Feature relationship
+
+The dataset contain numerical data and categorical data, and has missing values. Before setting up a model, it is imperative to study the relationship between the potential predictors and the outcome variable. We'll use the `featurePlot()` function from the `caret` package to plot price against each numeric variable:
+
+```{r}
+library(caret)
+#keep the numeric variables and exclude NA in the dependent variable
+cars %>% select(where(is.numeric)) %>% filter(!is.na(price))-> cnum
+featurePlot(cnum, cnum$price, labels = c("","Price"))
+```
+
+We can spot many variables that seem to have a linear relationship with price :
+
+* Positive 
+  + engine-size
+  + length
+  + curb-weight
+  + width
+  + horsepower
+or
+
+* Negative
+  + city-mpg
+  + highway-mpg
+  
+  Let's now visualize the distribution of the target variable:
+  
+```{r}
+theme_set(theme_classic())
+cnum %>% ggplot(aes(price)) + geom_boxplot() + labs(title = "Prices range", x="Price", y="") +scale_x_continuous(labels = scales::dollar)
+```
+
+
+The price is ranging from 5118\$ to 45400\$, with the vast majority of the prices to be found under 20000$.
+  
+  
+```{r}
+cnum %>% ggplot(aes(price)) + geom_histogram(color="white", fill="steelblue", bins = 10, binwidth = 5000, boundary=0.5) +
+  labs(title = "Prices distribution") +scale_x_continuous(n.breaks = 10)
+```
+  
+  It's interesting to further analyse the outliers which we can easily spot in the boxplot above :
+  
+```{r}
+cars %>% filter(price >= 30000)
+```
+
+The brands found in the outliers are bmw, jaguar, mercedes-benz and porsche. Let's see if we find the same brands in the preceding quartiles:
+
+```{r}
+cars %>% filter(price <= 30000 & make %in% c("bmw", "jaguar", "mercedes-benz", "porsche"))
+```
+
+Jaguar is not present and the other models seem to  differ from the outliers by a lower engine size and horsepower. There seems to be no specific reason to reject them as the higher price range matches the more expensive brands.
+
+```{r}
+quantile(cars$price, na.rm = TRUE)
+ggplot(cars, aes(price, reorder(make, price, mean, na.rm=TRUE))) + geom_boxplot() + labs(title ="Prices range by make", y = "Brand", x= "Price")
+```
+
+## Model conception
+
+We will now use the numeric attributes to build a k-nearest neighbors model to predict prices.
+
+```{r}
+library(caret)
+#create train and test sets
+set.seed(1)
+trindex <-  createDataPartition(cnum$price, p = 0.85, list=FALSE)
+train <- cnum[trindex,]
+test <-  cnum[-trindex,]
+
+```
+
+```{r}
+#setting up the hyperparameter grid
+kneigh <- expand.grid(k = 1:20)
+
+#setting up a 5 folds cross validation
+mytrain <- trainControl(method = "cv", number = 5)
+
+#splitting target and predictors
+X <- as.data.frame(train[1:15])
+target <- train[[16]]
+
+#required package
+library(RANN)
+
+#setting up with two models, a random forest and a knn
+rf <- train(x = X,
+             y = target,
+             method = "ranger",
+             trControl = mytrain,
+             preProcess = "knnImpute")
+
+knn <- train(x = X,
+             y = target,
+             method = "knn",
+             trControl = mytrain,
+             preProcess = "knnImpute",
+             tuneGrid = kneigh)
+
+print(knn)
+print(rf)
+```
+
+The random forest model outperforms the knn with a Train RMSE of `r round(caret::getTrainPerf(rf)[[1]],2)` versus `r round(caret::getTrainPerf(knn)[[1]],2)``.
+
+```{r}
+model_list <- list(rf, knn)
+rs <- resamples(model_list)
+summary(rs)
+```
+
+```{r}
+dotplot(rs)
+```
+
+The random forest model shows also less variability in all the metrics. 
+
+## Model evaluation
+
+```{r}
+predictions <- predict(rf, newdata = test)
+postResample(pred = predictions, obs = test$price)
+```
+
+The random forest seem to perform very well on the test data, with even lower RMSE and MAE, and a higher Rsquared. We should take these results carefully given the small amount of data.
